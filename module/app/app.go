@@ -2,12 +2,13 @@ package app
 
 import (
 	"fmt"
-	vestingtypes "github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/rakyll/statik/fs"
@@ -43,6 +44,7 @@ import (
 	authtx "github.com/cosmos/cosmos-sdk/x/auth/tx"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/cosmos/cosmos-sdk/x/auth/vesting"
+	vestingtypes "github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
 	"github.com/cosmos/cosmos-sdk/x/authz"
 	authzkeeper "github.com/cosmos/cosmos-sdk/x/authz/keeper"
 	authzmodule "github.com/cosmos/cosmos-sdk/x/authz/module"
@@ -111,6 +113,7 @@ import (
 
 	gravityparams "github.com/Gravity-Bridge/Gravity-Bridge/module/app/params"
 	"github.com/Gravity-Bridge/Gravity-Bridge/module/app/upgrades"
+	"github.com/Gravity-Bridge/Gravity-Bridge/module/app/upgrades/enterupgradename"
 	v2 "github.com/Gravity-Bridge/Gravity-Bridge/module/app/upgrades/v2"
 	"github.com/Gravity-Bridge/Gravity-Bridge/module/x/gravity"
 	"github.com/Gravity-Bridge/Gravity-Bridge/module/x/gravity/keeper"
@@ -552,6 +555,11 @@ func NewGravityApp(
 
 	var skipGenesisInvariants = cast.ToBool(appOpts.Get(crisis.FlagSkipGenesisInvariants))
 
+	// -^v-^v-^v-^v-^v-^v- TESTING TOOL -^v-^v-^v-^v-^v-^v-^v-^v-^v
+	// Write special data to disk so that registerStoreLoaders works appropriately
+	SetupManualTest(app)
+	// -^v-^v-^v-^v-^v-^v- END TOOL -^v-^v-^v-^v-^v-^v-^v-^v-^v
+
 	app.registerStoreLoaders()
 
 	mm := *module.NewManager(
@@ -776,6 +784,10 @@ func (app *Gravity) Name() string { return app.BaseApp.Name() }
 
 // BeginBlocker application updates every begin block
 func (app *Gravity) BeginBlocker(ctx sdk.Context, req abci.RequestBeginBlock) abci.ResponseBeginBlock {
+	// -^v-^v-^v-^v-^v-^v- TESTING TOOL -^v-^v-^v-^v-^v-^v-^v-^v-^v
+	RunManualTestingTool(app, ctx, req)
+	// -^v-^v-^v-^v-^v-^v- END TOOL -^v-^v-^v-^v-^v-^v-^v-^v-^v
+
 	out := app.mm.BeginBlock(ctx, req)
 	firstBlock.Do(func() { // Run the startup firstBeginBlocker assertions only once
 		app.firstBeginBlocker(ctx)
@@ -985,3 +997,38 @@ func (app *Gravity) registerStoreLoaders() {
 		}
 	}
 }
+
+// -^v-^v-^v-^v-^v-^v- TESTING TOOL -^v-^v-^v-^v-^v-^v-^v-^v-^v
+// Writes a false UpgradeInfo to disk, so that the StoreLoader is set correctly by x/upgrade
+func SetupManualTest(app *Gravity) {
+	upgradeHeight, err := strconv.Atoi(os.Getenv("GRAVITY_UPGRADE_HEIGHT"))
+	if err != nil {
+		panic(err)
+	}
+	// This info is read in app.registerStoreLoaders(), used to set the correct store loader for new/deleted modules
+	// TODO: Set the upgrade's name as the second parameter, ideally using a constant
+	app.upgradeKeeper.DumpUpgradeInfoToDisk(int64(upgradeHeight), enterupgradename.PolarisToenterupgradenamePlanName)
+}
+
+func RunManualTestingTool(app *Gravity, ctx sdk.Context, _ abci.RequestBeginBlock) {
+	// Do a custom upgrade without governance on this node
+	upgradeHeight, err := strconv.Atoi(os.Getenv("GRAVITY_UPGRADE_HEIGHT"))
+	currHeight := ctx.BlockHeight()
+	fmt.Println("Checking if it's time to apply the upgrade: Curr Height:", currHeight, "upgradeHeight", upgradeHeight)
+	if err == nil && (upgradeHeight == 0 || currHeight == int64(upgradeHeight)) {
+		fmt.Println("It's time to upgrade!")
+		// TODO: Set the upgrade's name in the upgradetypes.Plan below
+		plan := upgradetypes.Plan{
+			Name:                "enterupgradename",
+			Time:                time.Time{},
+			Height:              currHeight,
+			Info:                "Simulated upgrade plan",
+			UpgradedClientState: nil,
+		}
+
+		fmt.Println("Applying upgrade:", plan)
+		app.upgradeKeeper.ApplyUpgrade(ctx, plan)
+	}
+}
+
+// -^v-^v-^v-^v-^v-^v- END TOOL -^v-^v-^v-^v-^v-^v-^v-^v-^v
